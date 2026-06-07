@@ -75,6 +75,34 @@ Format:
 - DuckDB: lighter, faster, supports Athena-like SQL well. Rejected because Postgres also doubles as Airflow's metadata DB (one fewer service).
 - sqlite: too limited for dbt's needs
 
+## 0006: Phase 0 foundation tooling choices
+
+**Date:** 2026-05-30
+**Status:** Accepted
+**Context:** Phase 0 (ROADMAP.md) requires standing up the Python project, pre-commit hooks, and a base Docker Compose stack. Several details were left open by the specs and needed concrete choices.
+**Decision:**
+- **Secret scanning = gitleaks** (not detect-secrets). Wired into `.pre-commit-config.yaml`. Chosen for stronger industry/resume recognition. Trade-off: requires the gitleaks binary (or Go) available to pre-commit, an extra install step on Windows vs. a pure-Python tool.
+- **Image tags pinned, not `:latest`.** INFRA.md shows `:latest`; we pin (`redpanda:v24.2.7`, `minio:RELEASE.2024-10-13T13-34-11Z`, `postgres:16-alpine`) for reproducibility per CLAUDE.md. Tags were chosen without a registry pull (compose was validated config-only this session); **verify/refresh on first `make up`.**
+- **Python pinned to `>=3.11,<3.12`** in `pyproject.toml` (CLAUDE.md mandates 3.11, not 3.12+).
+- **Phase 0 compose = base three services only** (redpanda, minio, postgres). The full INFRA.md stack (MLflow, Prometheus, Grafana, Airflow, app services) lands in later phases. Redpanda Console was deliberately omitted to honour the roadmap's "base" scope.
+- **mypy strict excludes `**/tests/**`.** Tests exercise untyped third-party protobuf APIs (`gtfs-realtime-bindings` ships no stubs); strict typing there forces noisy `type: ignore`. Application code remains `mypy --strict` clean. ruff + pytest cover tests.
+- **Generated `main.py` stub removed** and the package renamed `transit-predictor-spec` → `transit-predictor` in `pyproject.toml`; real entrypoints live under `services/`.
+**Consequences:** Reproducible, lint/type-clean foundation. gitleaks adds a binary dependency for contributors.
+**Alternatives considered:**
+- detect-secrets (pure-Python, no binary) — rejected for weaker name recognition.
+- `:latest` image tags — rejected; violates the reproducibility commitment.
+- mypy-strict on tests via stub packages or casts — rejected as noise for a portfolio project.
+
+**Follow-up (2026-06-07):** First `make up` confirmed. All three pinned image tags (`redpanda:v24.2.7`, `minio:RELEASE.2024-10-13T13-34-11Z`, `postgres:16-alpine`) pulled and ran healthy. MinIO curl healthcheck confirmed working (curl 8.10.1 present in image). All containers healthy within 34 seconds.
+
+## 0007: TransLink GTFS-RT vehicle positions endpoint verified
+
+**Date:** 2026-05-30
+**Status:** Accepted
+**Context:** DATA.md flags that feed URLs change and the first ingester task is to confirm the current endpoint.
+**Decision:** Confirmed `https://gtfsrt.api.translink.com.au/api/realtime/SEQ/VehiclePositions` is live and serves valid GTFS-RT protobuf. A single Phase-0 poll on 2026-05-30 returned **780 vehicle position records** (feed header timestamp present, decoded cleanly via `gtfs-realtime-bindings`). No API key required.
+**Consequences:** The vehicle-positions endpoint in `.env.example` and `services/ingester/poll_once.py` is trustworthy as of this date. Trip Updates and Alerts endpoints are recorded in `.env.example` but **not yet verified** — confirm before relying on them in Phase 1.
+**Alternatives considered:** n/a (verification task, not a fork).
 
 ## Template for new entries
 
