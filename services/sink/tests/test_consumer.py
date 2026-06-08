@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+from confluent_kafka import KafkaError, KafkaException
+
 from services.sink.config import SinkConfig
 from services.sink.consumer import SinkConsumer
 
@@ -83,6 +85,35 @@ def test_flush_topic_noop_on_empty_buffer() -> None:
     sink._flush_topic("gtfsrt.vehicle_positions")
 
     mock_s3.put_object.assert_not_called()
+
+
+def test_safe_commit_ignores_no_offset_error() -> None:
+    """_safe_commit must not raise when Kafka returns _NO_OFFSET on first cycle."""
+    sink, mock_consumer, _ = _make_sink()
+
+    # Build a KafkaException that carries a _NO_OFFSET KafkaError
+    no_offset_err = MagicMock(spec=KafkaError)
+    no_offset_err.code.return_value = KafkaError._NO_OFFSET  # noqa: SLF001
+    mock_consumer.commit.side_effect = KafkaException(no_offset_err)
+
+    # Should not raise
+    sink._safe_commit()
+    mock_consumer.commit.assert_called_once_with(asynchronous=False)
+
+
+def test_safe_commit_reraises_unexpected_kafka_errors() -> None:
+    """_safe_commit must propagate errors other than _NO_OFFSET."""
+    sink, mock_consumer, _ = _make_sink()
+
+    real_err = MagicMock(spec=KafkaError)
+    real_err.code.return_value = KafkaError.UNKNOWN_TOPIC_OR_PART
+    mock_consumer.commit.side_effect = KafkaException(real_err)
+
+    try:
+        sink._safe_commit()
+        raise AssertionError("Expected KafkaException to be re-raised")
+    except KafkaException:
+        pass  # expected
 
 
 def test_s3_key_includes_feed_name_and_date_partition() -> None:

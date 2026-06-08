@@ -162,7 +162,7 @@ def main() -> int:
         duration_secs = max(timestamps) - min(timestamps)
         duration_str = _format_duration(duration_secs)
         time_coverage = (
-            f"{ts_min.strftime('%Y-%m-%d %H:%M:%S')} UTC  →  "
+            f"{ts_min.strftime('%Y-%m-%d %H:%M:%S')} UTC  ->  "
             f"{ts_max.strftime('%Y-%m-%d %H:%M:%S')} UTC  "
             f"({duration_str})"
         )
@@ -171,7 +171,7 @@ def main() -> int:
 
     sep = "=" * 64
     print(sep)
-    print("  Transit Predictor — Phase 1  •  Vehicle Positions Summary")
+    print("  Transit Predictor - Phase 1 | Vehicle Positions Summary")
     print(sep)
     print(f"  Records loaded     : {record_count:>10,}")
     print(f"  Distinct vehicles  : {len(vehicle_ids):>10,}")
