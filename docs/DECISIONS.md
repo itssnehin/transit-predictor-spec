@@ -104,6 +104,19 @@ Format:
 **Consequences:** The vehicle-positions endpoint in `.env.example` and `services/ingester/poll_once.py` is trustworthy as of this date. Trip Updates and Alerts endpoints are recorded in `.env.example` but **not yet verified** — confirm before relying on them in Phase 1.
 **Alternatives considered:** n/a (verification task, not a fork).
 
+## 0008: NDJSON for the raw layer (not Parquet)
+
+**Date:** 2026-06-08
+**Status:** Accepted
+**Context:** The sink consumer (Phase 1) needs to persist raw Kafka messages to MinIO. Two options: write each batch directly as Parquet, or write line-delimited JSON (NDJSON). The raw layer is a verbatim backup — every byte that came off the wire.
+**Decision:** NDJSON for Phase 1. Parquet conversion is deferred to Phase 2 (Spark Structured Streaming job).
+**Consequences:**
+- *Good:* No schema commitment at ingest time. The vehicle_positions payload schema is observed-not-specified until Phase 2 reads live data. NDJSON is trivially writable from pure Python with no Spark dependency in the sink service. Files are human-readable for debugging.
+- *Trade-off:* Raw storage is 3–5× larger than Parquet for the same data. Queries via Athena against NDJSON are slower and costlier than Parquet + partition pruning. This is acceptable because the raw layer is append-only (never queried directly in production) and Phase 2 will normalise it into the curated Parquet layer that Athena/dbt actually reads.
+**Alternatives considered:**
+- Parquet at ingest: rejected. Requires schema-on-write, a Spark or PyArrow dependency in the sink, and a schema that is not yet finalised from live data.
+- Avro with Confluent Schema Registry: appropriate for Phase 3+; over-engineered for Phase 1 where the goal is to prove the pipeline plumbing works.
+
 ## Template for new entries
 
 ```
