@@ -16,13 +16,16 @@ services:
       - --overprovisioned
       - --node-id=0
       - --check=false
-      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
+      # Two listeners:
+      #   INTERNAL — used by other Docker containers (ingester, sink)
+      #   EXTERNAL — used by tools on the host machine (rpk CLI, test scripts)
+      - --kafka-addr=INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:19092
+      - --advertise-kafka-addr=INTERNAL://redpanda:9092,EXTERNAL://localhost:19092
       - --pandaproxy-addr=0.0.0.0:8082
       - --advertise-pandaproxy-addr=localhost:8082
     ports:
-      - "9092:9092"   # Kafka API
-      - "9644:9644"   # Admin API
+      - "19092:19092"  # Kafka API (host access — use localhost:19092 from outside Docker)
+      - "9644:9644"    # Admin API
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:

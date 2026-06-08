@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 import boto3
 from botocore.config import Config
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, KafkaError, KafkaException
 
 from services.sink.config import SinkConfig
 
@@ -104,7 +104,7 @@ class SinkConsumer:
 
             if self._buffer_bytes[topic] >= self._config.batch_size_bytes:
                 self._flush_topic(topic)
-                self._consumer.commit(asynchronous=False)
+                self._safe_commit()
 
         self._flush_all()
         self._consumer.close()
@@ -123,7 +123,25 @@ class SinkConsumer:
         elapsed = time.monotonic() - self._last_flush_at
         if elapsed >= self._config.flush_interval_seconds:
             self._flush_all()
+            self._safe_commit()
+
+    def _safe_commit(self) -> None:
+        """Commit offsets, ignoring the benign _NO_OFFSET error.
+
+        confluent-kafka raises KafkaException(_NO_OFFSET) when commit() is
+        called but there are no stored offsets yet — this happens on the very
+        first flush cycle before the consumer has polled from every assigned
+        partition.  It is not a data-loss risk; we just skip the commit for
+        that cycle and it will succeed on the next one.
+        """
+        try:
             self._consumer.commit(asynchronous=False)
+        except KafkaException as exc:
+            err: KafkaError = exc.args[0]
+            if err.code() == KafkaError._NO_OFFSET:  # noqa: SLF001
+                logger.debug("commit skipped — no offsets stored yet (first cycle)")
+            else:
+                raise
 
     def _flush_all(self) -> None:
         """Flush every topic that has buffered data."""

@@ -28,7 +28,13 @@ ps:  ## Show running services
 	docker compose ps
 
 bootstrap:  ## Initialise buckets, topics, schemas, etc. (run once after first `make up`)
-	./scripts/bootstrap.sh
+	@if [ -f "/usr/bin/bash" ]; then \
+		/usr/bin/bash ./scripts/bootstrap.sh; \
+	elif [ -f "C:/Program Files/Git/bin/bash.exe" ]; then \
+		"C:/Program Files/Git/bin/bash.exe" ./scripts/bootstrap.sh; \
+	else \
+		bash ./scripts/bootstrap.sh; \
+	fi
 
 clean:  ## Stop stack and remove volumes (DESTRUCTIVE)
 	docker compose down -v
