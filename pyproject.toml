@@ -13,6 +13,9 @@ dependencies = [
     "prometheus-client>=0.20,<1.0",
     # MinIO/S3 writes (boto3 works with both local MinIO and AWS S3 via endpoint_url)
     "boto3>=1.34,<2.0",
+    # Postgres driver for the static GTFS loader. The [binary] extra ships a
+    # prebuilt libpq so no local C toolchain is needed (matters on Windows).
+    "psycopg[binary]>=3.1,<4.0",
 ]
 
 [dependency-groups]
