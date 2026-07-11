@@ -36,6 +36,16 @@ class StreamConfig:
     pg_user: str
     pg_password: str
     pg_database: str
+    # Object store (MinIO locally, S3 in the cloud) for the curated layer.
+    s3_endpoint: str
+    s3_access_key: str
+    s3_secret_key: str
+    curated_bucket: str
+
+    @property
+    def arrivals_path(self) -> str:
+        """s3a:// URI the arrivals Parquet is written under."""
+        return f"s3a://{self.curated_bucket}/curated/arrivals/"
 
     @property
     def pg_conninfo(self) -> str:
@@ -100,4 +110,8 @@ class StreamConfig:
             pg_user=require("POSTGRES_USER"),
             pg_password=require("POSTGRES_PASSWORD"),
             pg_database=require("POSTGRES_DB"),
+            s3_endpoint=require("MINIO_ENDPOINT"),
+            s3_access_key=require("MINIO_ROOT_USER"),
+            s3_secret_key=require("MINIO_ROOT_PASSWORD"),
+            curated_bucket=os.environ.get("CURATED_BUCKET", "transit-curated").strip(),
         )

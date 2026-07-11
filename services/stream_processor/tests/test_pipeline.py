@@ -217,6 +217,26 @@ def test_payload_timestamp_falls_back_to_feed_timestamp() -> None:
     assert events[0].observed_delay_s == 60
 
 
+def test_event_to_row_matches_arrival_columns() -> None:
+    from services.stream_processor.pipeline import ARRIVAL_COLUMNS, event_to_row
+
+    pipeline, _ = _pipeline()
+    schedule = _schedule()
+    events = pipeline.process_records(
+        [_vp("T1", 1, "STOPPED_AT", _epoch(schedule, 1))], now=_mid_trip(schedule)
+    )
+
+    row = event_to_row(events[0])
+
+    assert len(row) == len(ARRIVAL_COLUMNS)
+    as_dict = dict(zip(ARRIVAL_COLUMNS, row, strict=True))
+    assert as_dict["trip_id"] == "T1"
+    assert as_dict["stop_sequence"] == 1
+    # dt partition = UTC date of observed arrival. Scheduled 08:00 Brisbane on
+    # 2026-06-01 is 22:00 UTC on 2026-05-31 — the partition must say 05-31.
+    assert as_dict["dt"] == "2026-05-31"
+
+
 def test_alert_records_are_ignored() -> None:
     pipeline, _ = _pipeline()
     schedule = _schedule()

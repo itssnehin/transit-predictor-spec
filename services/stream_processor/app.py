@@ -1,98 +1,150 @@
-"""Spark Structured Streaming entrypoint (Phase 2b scaffold).
+"""Spark Structured Streaming entrypoint: Kafka -> ground truth -> Parquet.
 
-For now this proves the Kafka -> Spark plumbing: it reads the vehicle_positions
-topic, parses the ingester's envelope, and logs per-batch counts. Phases 2c/2d
-replace the body of `_process_batch` with the ground-truth derivation and the
-curated-Parquet write — the foreachBatch shape is deliberately kept so that
-swap is local.
+The full Phase 2 pipeline. Spark owns Kafka ingestion, offset checkpointing,
+micro-batch scheduling, and the Parquet sink; the ground-truth derivation
+runs on the driver (ADR 0011) via :class:`ArrivalPipeline`, which holds the
+cross-batch trip state.
+
+Each micro-batch:
+
+1. Collect the batch's raw JSON strings to the driver. At Brisbane scale
+   (~3,000 records/min peak, 60 s trigger) a batch is a few thousand small
+   dicts — well within driver memory, and the deliberate consequence of the
+   driver-side-state decision.
+2. Feed them to ArrivalPipeline (vehicle positions + trip-update cancels).
+3. Write any derived arrivals to the curated layer as Parquet, partitioned
+   by dt (UTC date of observed_arrival_ts):
+   ``s3a://transit-curated/curated/arrivals/dt=YYYY-MM-DD/``
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
+from datetime import timedelta
 
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql import functions as F
-from pyspark.sql.types import LongType, StringType, StructField, StructType
+from pyspark.sql.types import (
+    BooleanType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 from services.stream_processor.config import StreamConfig, StreamConfigError
+from services.stream_processor.pipeline import ARRIVAL_COLUMNS, ArrivalPipeline, event_to_row
+from services.stream_processor.schedule_repo import ScheduleRepository
 from services.stream_processor.session import build_spark_session
 
 logger = logging.getLogger(__name__)
 
-# The envelope the ingester wraps every Kafka message in (see
-# services/ingester/models.py). We parse only the envelope here; the GTFS-RT
-# payload schema is introduced in Phase 2c where the ground-truth logic needs it.
-_ENVELOPE_SCHEMA = StructType(
+# Spark schema for the curated arrivals table (docs/DATA.md), in
+# ARRIVAL_COLUMNS order. `dt` is the partition column.
+_ARRIVALS_SCHEMA = StructType(
     [
-        StructField("ingested_at", StringType(), nullable=True),
-        StructField("source_feed", StringType(), nullable=True),
-        StructField("ingester_version", StringType(), nullable=True),
-        StructField("feed_timestamp", LongType(), nullable=True),
+        StructField("event_id", StringType(), nullable=False),
+        StructField("trip_id", StringType(), nullable=False),
+        StructField("route_id", StringType(), nullable=False),
+        StructField("stop_id", StringType(), nullable=False),
+        StructField("stop_sequence", IntegerType(), nullable=False),
+        StructField("scheduled_arrival_ts", TimestampType(), nullable=False),
+        StructField("observed_arrival_ts", TimestampType(), nullable=False),
+        StructField("observed_delay_s", IntegerType(), nullable=False),
+        StructField("observed_delay_imputed", BooleanType(), nullable=False),
+        StructField("day_of_week", IntegerType(), nullable=False),
+        StructField("hour_of_day", IntegerType(), nullable=False),
+        # Nullable until the Queensland calendar CSVs exist (flagged spec gap).
+        StructField("is_school_day", BooleanType(), nullable=True),
+        StructField("is_public_holiday", BooleanType(), nullable=True),
+        StructField("ingested_at", TimestampType(), nullable=False),
+        StructField("processed_at", TimestampType(), nullable=False),
+        StructField("dt", StringType(), nullable=False),
     ]
 )
 
+assert tuple(f.name for f in _ARRIVALS_SCHEMA.fields) == ARRIVAL_COLUMNS
 
-def read_vehicle_positions(spark: SparkSession, config: StreamConfig) -> DataFrame:
-    """Open the Kafka vehicle_positions topic as a streaming DataFrame.
 
-    Returns a DataFrame with the parsed envelope fields plus the Kafka key.
-    """
-    raw = (
+def read_stream(spark: SparkSession, config: StreamConfig) -> DataFrame:
+    """Open both GTFS-RT topics as one streaming DataFrame of JSON strings."""
+    topics = f"{config.vehicle_positions_topic},{config.trip_updates_topic}"
+    return (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", config.kafka_bootstrap_servers)
-        .option("subscribe", config.vehicle_positions_topic)
+        .option("subscribe", topics)
         .option("startingOffsets", config.starting_offsets)
         .load()
+        .selectExpr("CAST(value AS STRING) AS raw")
     )
-
-    # Kafka value is the JSON the ingester produced: {"envelope": {...}, "payload": {...}}.
-    return (
-        raw.select(
-            F.col("key").cast("string").alias("vehicle_key"),
-            F.from_json(F.col("value").cast("string"), _wrapped_schema()).alias("msg"),
-        )
-        .select("vehicle_key", "msg.envelope.*")
-    )
-
-
-def _wrapped_schema() -> StructType:
-    """Schema for the full Kafka message: an envelope plus an opaque payload."""
-    return StructType(
-        [
-            StructField("envelope", _ENVELOPE_SCHEMA, nullable=True),
-            # payload parsed in Phase 2c; kept as a raw string for now.
-            StructField("payload", StringType(), nullable=True),
-        ]
-    )
-
-
-def _process_batch(batch: DataFrame, epoch_id: int) -> None:
-    """Per-micro-batch handler. Phase 2b: just count and sample."""
-    count = batch.count()
-    logger.info("Batch epoch=%d vehicle_position_records=%d", epoch_id, count)
-    if count:
-        batch.select("vehicle_key", "source_feed", "feed_timestamp").show(5, truncate=False)
 
 
 def run(spark: SparkSession, config: StreamConfig) -> None:
-    """Start the streaming query and block until termination."""
-    stream = read_vehicle_positions(spark, config)
+    """Wire the pipeline and block on the streaming query."""
+    repo = ScheduleRepository(config.pg_conninfo)
+    repo.open()
+    pipeline = ArrivalPipeline(
+        repo, watermark=timedelta(minutes=config.watermark_minutes)
+    )
+
+    def process_batch(batch: DataFrame, epoch_id: int) -> None:
+        raw_rows = [row["raw"] for row in batch.collect()]
+        records = []
+        bad = 0
+        for raw in raw_rows:
+            try:
+                records.append(json.loads(raw))
+            except json.JSONDecodeError:
+                bad += 1
+        if bad:
+            logger.warning("Batch epoch=%d skipped %d undecodable records", epoch_id, bad)
+
+        events = pipeline.process_records(records)
+        logger.info(
+            "Batch epoch=%d records=%d arrivals=%d active_trips=%d",
+            epoch_id,
+            len(records),
+            len(events),
+            pipeline.active_trips,
+        )
+        if not events:
+            return
+
+        rows = [event_to_row(e) for e in events]
+        (
+            spark.createDataFrame(rows, schema=_ARRIVALS_SCHEMA)
+            # One file per partition per batch: avoids the small-file problem
+            # at our scale (spec implementation note).
+            .coalesce(1)
+            .write.mode("append")
+            .partitionBy("dt")
+            .parquet(config.arrivals_path)
+        )
+        logger.info(
+            "Batch epoch=%d wrote %d arrivals to %s", epoch_id, len(rows), config.arrivals_path
+        )
+
     query = (
-        stream.writeStream.foreachBatch(_process_batch)
+        read_stream(spark, config)
+        .writeStream.foreachBatch(process_batch)
         .option("checkpointLocation", config.checkpoint_location)
         .trigger(processingTime=config.trigger_interval)
         .start()
     )
     logger.info(
-        "Streaming started topic=%s offsets=%s trigger=%s checkpoint=%s",
+        "Streaming started topics=%s,%s offsets=%s trigger=%s sink=%s",
         config.vehicle_positions_topic,
+        config.trip_updates_topic,
         config.starting_offsets,
         config.trigger_interval,
-        config.checkpoint_location,
+        config.arrivals_path,
     )
-    query.awaitTermination()
+    try:
+        query.awaitTermination()
+    finally:
+        repo.close()
 
 
 def main() -> int:
@@ -110,7 +162,12 @@ def main() -> int:
         print(f"FATAL stream-processor configuration error: {exc}", file=sys.stderr)
         return 1
 
-    spark = build_spark_session(log_level=config.log_level)
+    spark = build_spark_session(
+        log_level=config.log_level,
+        s3_endpoint=config.s3_endpoint,
+        s3_access_key=config.s3_access_key,
+        s3_secret_key=config.s3_secret_key,
+    )
     try:
         run(spark, config)
     finally:

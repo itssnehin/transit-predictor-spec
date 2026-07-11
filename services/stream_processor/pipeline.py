@@ -205,3 +205,55 @@ def _parse_iso(value: str | None) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+# ---------------------------------------------------------------------------
+# Row serialisation for the curated Parquet sink (docs/DATA.md `arrivals`)
+# ---------------------------------------------------------------------------
+
+# Column order for the arrivals table. `dt` (UTC date of observed_arrival_ts,
+# per spec) is last: it is the partition column.
+ARRIVAL_COLUMNS: tuple[str, ...] = (
+    "event_id",
+    "trip_id",
+    "route_id",
+    "stop_id",
+    "stop_sequence",
+    "scheduled_arrival_ts",
+    "observed_arrival_ts",
+    "observed_delay_s",
+    "observed_delay_imputed",
+    "day_of_week",
+    "hour_of_day",
+    "is_school_day",
+    "is_public_holiday",
+    "ingested_at",
+    "processed_at",
+    "dt",
+)
+
+
+def event_to_row(event: ArrivalEvent) -> tuple[Any, ...]:
+    """Flatten an ArrivalEvent into a tuple matching ARRIVAL_COLUMNS.
+
+    Kept here (not in app.py) so it has no pyspark import and stays testable
+    on the host, where the spark extra is not installed.
+    """
+    return (
+        event.event_id,
+        event.trip_id,
+        event.route_id,
+        event.stop_id,
+        event.stop_sequence,
+        event.scheduled_arrival_ts,
+        event.observed_arrival_ts,
+        event.observed_delay_s,
+        event.observed_delay_imputed,
+        event.day_of_week,
+        event.hour_of_day,
+        event.is_school_day,
+        event.is_public_holiday,
+        event.ingested_at,
+        event.processed_at,
+        event.observed_arrival_ts.astimezone(UTC).date().isoformat(),
+    )
