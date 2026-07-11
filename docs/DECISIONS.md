@@ -137,6 +137,20 @@ Format:
 - Load the full multi-modal feed: rejected — wastes storage and contradicts the `route_type = 3` scope in DATA.md.
 - `TIME` columns with normalisation at load: rejected — loses the service-day semantics the stream processor needs; defer parsing to where the service date is known.
 
+## 0010: Spark runs in local[*] mode in a container (no cluster locally)
+
+**Date:** 2026-06-08
+**Status:** Accepted
+**Context:** `specs/STREAM_PROCESSOR.md` commits to Spark 3.5.x / PySpark, deployed to EKS in the cloud (Phase 7). For the local stack we must choose *how* Spark runs: a dedicated master+worker cluster in Compose, embedded local mode, or on the Windows host directly. The spec itself notes "we're using Spark because the skill is portable, not because we need its scale" — Brisbane peaks at ~3,000 records/min, trivially handled by one executor.
+**Decision:** Run PySpark in **`local[*]` mode inside a single container**. The PySpark/Structured-Streaming code is identical to a clustered deployment; only the master URL and submit mechanism differ. Migrating to EKS later changes configuration, not application code.
+**Consequences:**
+- *Good:* One container, no master/worker orchestration, fast iteration, easy debugging. Same DataFrame + Structured Streaming APIs as production. Avoids Spark-on-Windows `winutils.exe` friction by never running Spark on the host.
+- *Design implication:* The hard ground-truth derivation is written as **pure Python** (unit-tested with plain pytest, no Spark/JVM), with Spark as a thin shell that reads Kafka, groups by `trip_id`, applies the pure function, and writes Parquet. Keeps the complex logic testable on any machine and keeps Spark-dependent tests (chispa) as in-container integration tests.
+- *Trade-off:* Loses the literal "ran a multi-node Spark cluster locally" talking point — recovered in Phase 7 (EKS Spark) and the temporary MSK exercise.
+**Alternatives considered:**
+- Dedicated Spark cluster in Compose (master + worker, `spark-submit`): closest to prod topology but ~1.5 GB JVM images, more moving parts, slower iteration — scale we provably don't need locally.
+- PySpark on the Windows host via uv: fastest edit-run loop but requires a `winutils.exe` Hadoop shim that is fiddly and non-reproducible across machines; rejected for the shared dev path.
+
 ## Template for new entries
 
 ```

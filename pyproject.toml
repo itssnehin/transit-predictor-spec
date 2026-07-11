@@ -18,6 +18,14 @@ dependencies = [
     "psycopg[binary]>=3.1,<4.0",
 ]
 
+[project.optional-dependencies]
+# Spark is only needed by the stream_processor service. Kept as an extra so the
+# lean ingester/sink images (which `uv sync` without extras) don't pull ~300 MB
+# of PySpark. The stream_processor Dockerfile installs it with `--extra spark`.
+spark = [
+    "pyspark>=3.5,<3.6",  # local[*] mode; Kafka/S3A connectors pulled as Maven packages
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.11,<0.12",
@@ -62,6 +70,14 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 # confluent-kafka and boto3 ship no PEP-561 stubs.
 module = ["confluent_kafka.*", "boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pyspark is an optional extra not installed in the host/dev venv (it lives only
+# in the stream_processor container). ignore_missing_imports lets mypy check the
+# stream_processor glue on the host without PySpark present. The pure ground-truth
+# logic carries no pyspark imports and stays fully strict-typed.
+module = ["pyspark.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

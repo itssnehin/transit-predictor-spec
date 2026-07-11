@@ -134,6 +134,30 @@ services:
           cpus: "0.5"
           memory: 256M
 
+  stream_processor:
+    build:
+      context: .
+      dockerfile: services/stream_processor/Dockerfile
+    env_file: .env
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      STREAM_STARTING_OFFSETS: latest
+      # /tmp is writable by the non-root sparkuser. We deliberately do NOT mount
+      # named volumes here: Docker creates them root-owned, which blocks the
+      # non-root user from writing the Ivy cache (~/.ivy2) and the checkpoint.
+      # Trade-off: the Kafka connector JAR re-downloads on container *recreate*
+      # (not on restart). A future hardening step bakes the JARs into the image.
+      STREAM_CHECKPOINT_LOCATION: /tmp/spark-checkpoints
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2560M   # Spark driver+executor in one JVM; ~2 GB heap headroom
+
 volumes:
   redpanda-data:
   minio-data:
