@@ -10,21 +10,33 @@ import pytest
 
 from services.stream_processor.config import StreamConfig, StreamConfigError
 
+_REQUIRED = {
+    "KAFKA_BOOTSTRAP_SERVERS": "redpanda:9092",
+    "POSTGRES_USER": "transit",
+    "POSTGRES_PASSWORD": "transit",
+    "POSTGRES_DB": "transit",
+    "MINIO_ENDPOINT": "http://minio:9000",
+    "MINIO_ROOT_USER": "minioadmin",
+    "MINIO_ROOT_PASSWORD": "minioadmin",
+}
+
 
 def _load(monkeypatch: pytest.MonkeyPatch, extra: dict[str, str] | None = None) -> StreamConfig:
     extra = extra or {}
     for key in (
-        "KAFKA_BOOTSTRAP_SERVERS",
+        *_REQUIRED,
         "STREAM_STARTING_OFFSETS",
         "STREAM_WATERMARK_MINUTES",
         "STREAM_TRIGGER_INTERVAL",
         "STREAM_CHECKPOINT_LOCATION",
         "STREAM_VEHICLE_POSITIONS_TOPIC",
         "STREAM_LOG_LEVEL",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "CURATED_BUCKET",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "redpanda:9092")
-    for key, val in extra.items():
+    for key, val in {**_REQUIRED, **extra}.items():
         monkeypatch.setenv(key, val)
     return StreamConfig.from_env()
 
@@ -39,9 +51,41 @@ def test_defaults_are_sane(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_missing_kafka_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, val in _REQUIRED.items():
+        monkeypatch.setenv(key, val)
     monkeypatch.delenv("KAFKA_BOOTSTRAP_SERVERS", raising=False)
     with pytest.raises(StreamConfigError, match="KAFKA_BOOTSTRAP_SERVERS"):
         StreamConfig.from_env()
+
+
+def test_missing_postgres_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, val in _REQUIRED.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    with pytest.raises(StreamConfigError, match="POSTGRES_USER"):
+        StreamConfig.from_env()
+
+
+def test_pg_conninfo_contains_connection_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch, {"POSTGRES_HOST": "postgres", "POSTGRES_PORT": "5433"})
+    assert "host=postgres" in cfg.pg_conninfo
+    assert "port=5433" in cfg.pg_conninfo
+    assert "dbname=transit" in cfg.pg_conninfo
+
+
+def test_missing_minio_endpoint_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, val in _REQUIRED.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.delenv("MINIO_ENDPOINT", raising=False)
+    with pytest.raises(StreamConfigError, match="MINIO_ENDPOINT"):
+        StreamConfig.from_env()
+
+
+def test_arrivals_path_uses_curated_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch)
+    assert cfg.arrivals_path == "s3a://transit-curated/curated/arrivals/"
+    custom = _load(monkeypatch, {"CURATED_BUCKET": "my-bucket"})
+    assert custom.arrivals_path == "s3a://my-bucket/curated/arrivals/"
 
 
 def test_invalid_offsets_raises(monkeypatch: pytest.MonkeyPatch) -> None:

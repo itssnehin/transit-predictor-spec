@@ -151,6 +151,20 @@ Format:
 - Dedicated Spark cluster in Compose (master + worker, `spark-submit`): closest to prod topology but ~1.5 GB JVM images, more moving parts, slower iteration — scale we provably don't need locally.
 - PySpark on the Windows host via uv: fastest edit-run loop but requires a `winutils.exe` Hadoop shim that is fiddly and non-reproducible across machines; rejected for the shared dev path.
 
+## 0011: Driver-side trip state instead of mapGroupsWithState
+
+**Date:** 2026-06-22
+**Status:** Accepted
+**Context:** `specs/STREAM_PROCESSOR.md` says "Use Spark's `mapGroupsWithState` keyed on `trip_id`" for cross-batch trip state. That API is **Scala-only — it does not exist in PySpark**, which the same spec mandates ("Use PySpark, not Scala"). The spec is internally inconsistent, so a decision was required. The PySpark near-equivalent is `applyInPandasWithState` (arbitrary stateful streaming over pandas groups).
+**Decision:** Keep per-trip state (**TripTracker** instances) in a plain dict on the Spark driver inside `foreachBatch`, keyed by `trip_id`, evicted after the trip's scheduled end + watermark. Spark still owns Kafka ingestion, offset checkpointing, micro-batch scheduling, and the Parquet sink.
+**Consequences:**
+- *Good:* The ground-truth logic runs exactly as unit-tested (pure Python, 17 scenario tests) with no flattening into Spark state schemas; the schedule cache lives beside the state; debugging is ordinary Python. At Brisbane scale (~2,000 concurrently active trips, tiny state each) driver memory is a non-issue.
+- *Trade-off:* State is not checkpointed — on restart, in-flight trips lose partial progress (bounded: their remaining stops arrive as imputed or not at all; deterministic event ids keep replays idempotent). Single-driver only; horizontal scaling of the stateful step would require moving to `applyInPandasWithState`, which is the documented upgrade path if Phase 7 needs it.
+- At-least-once semantics preserved end to end; dedup on `event_id` happens downstream (dbt), per the spec's own out-of-scope note.
+**Alternatives considered:**
+- `applyInPandasWithState`: Spark-managed, checkpointed, scalable state — but requires serialising tracker state into Spark schemas, adds pandas+pyarrow, and moves the core logic's testability from plain pytest into the container. Rejected for v1 at this scale; revisit for the cloud deployment if warranted.
+- `flatMapGroupsWithState` via a Scala jar: violates the PySpark mandate outright.
+
 ## Template for new entries
 
 ```

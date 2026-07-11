@@ -141,6 +141,8 @@ services:
     env_file: .env
     environment:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      MINIO_ENDPOINT: http://minio:9000
+      POSTGRES_HOST: postgres
       STREAM_STARTING_OFFSETS: latest
       # /tmp is writable by the non-root sparkuser. We deliberately do NOT mount
       # named volumes here: Docker creates them root-owned, which blocks the
@@ -150,6 +152,10 @@ services:
       STREAM_CHECKPOINT_LOCATION: /tmp/spark-checkpoints
     depends_on:
       redpanda:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      postgres:
         condition: service_healthy
     restart: unless-stopped
     deploy:
