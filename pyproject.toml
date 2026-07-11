@@ -36,6 +36,12 @@ dev = [
     "respx>=0.21,<1.0",
     # Integration test containers (RedpandaContainer is in the kafka extra)
     "testcontainers[kafka]>=4.8,<5.0",
+    # Analysis stack for notebooks/ (Phase 2e sanity checks onward). Dev-only:
+    # none of the service images install the dev group.
+    "pandas>=2.2,<3.0",
+    "pyarrow>=17.0,<22.0",
+    "matplotlib>=3.9,<4.0",
+    "notebook>=7.2,<8.0",
 ]
 
 [tool.ruff]
