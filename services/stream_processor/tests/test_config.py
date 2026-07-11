@@ -10,21 +10,29 @@ import pytest
 
 from services.stream_processor.config import StreamConfig, StreamConfigError
 
+_REQUIRED = {
+    "KAFKA_BOOTSTRAP_SERVERS": "redpanda:9092",
+    "POSTGRES_USER": "transit",
+    "POSTGRES_PASSWORD": "transit",
+    "POSTGRES_DB": "transit",
+}
+
 
 def _load(monkeypatch: pytest.MonkeyPatch, extra: dict[str, str] | None = None) -> StreamConfig:
     extra = extra or {}
     for key in (
-        "KAFKA_BOOTSTRAP_SERVERS",
+        *_REQUIRED,
         "STREAM_STARTING_OFFSETS",
         "STREAM_WATERMARK_MINUTES",
         "STREAM_TRIGGER_INTERVAL",
         "STREAM_CHECKPOINT_LOCATION",
         "STREAM_VEHICLE_POSITIONS_TOPIC",
         "STREAM_LOG_LEVEL",
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setenv("KAFKA_BOOTSTRAP_SERVERS", "redpanda:9092")
-    for key, val in extra.items():
+    for key, val in {**_REQUIRED, **extra}.items():
         monkeypatch.setenv(key, val)
     return StreamConfig.from_env()
 
@@ -39,9 +47,26 @@ def test_defaults_are_sane(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_missing_kafka_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, val in _REQUIRED.items():
+        monkeypatch.setenv(key, val)
     monkeypatch.delenv("KAFKA_BOOTSTRAP_SERVERS", raising=False)
     with pytest.raises(StreamConfigError, match="KAFKA_BOOTSTRAP_SERVERS"):
         StreamConfig.from_env()
+
+
+def test_missing_postgres_credentials_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, val in _REQUIRED.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.delenv("POSTGRES_USER", raising=False)
+    with pytest.raises(StreamConfigError, match="POSTGRES_USER"):
+        StreamConfig.from_env()
+
+
+def test_pg_conninfo_contains_connection_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _load(monkeypatch, {"POSTGRES_HOST": "postgres", "POSTGRES_PORT": "5433"})
+    assert "host=postgres" in cfg.pg_conninfo
+    assert "port=5433" in cfg.pg_conninfo
+    assert "dbname=transit" in cfg.pg_conninfo
 
 
 def test_invalid_offsets_raises(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -30,6 +30,21 @@ class StreamConfig:
     checkpoint_location: str
     # Spark log verbosity (Spark is chatty at INFO).
     log_level: str
+    # Postgres (static GTFS schedule, loaded by services/gtfs_loader).
+    pg_host: str
+    pg_port: int
+    pg_user: str
+    pg_password: str
+    pg_database: str
+
+    @property
+    def pg_conninfo(self) -> str:
+        """Return a libpq connection string for the schedule repository."""
+        return (
+            f"host={self.pg_host} port={self.pg_port} "
+            f"user={self.pg_user} password={self.pg_password} "
+            f"dbname={self.pg_database}"
+        )
 
     @classmethod
     def from_env(cls) -> StreamConfig:
@@ -60,6 +75,11 @@ class StreamConfig:
         if watermark < 0:
             raise StreamConfigError("STREAM_WATERMARK_MINUTES must be non-negative")
 
+        try:
+            pg_port = int(os.environ.get("POSTGRES_PORT", "5432"))
+        except ValueError as exc:
+            raise StreamConfigError("POSTGRES_PORT must be an integer") from exc
+
         return cls(
             kafka_bootstrap_servers=kafka,
             vehicle_positions_topic=os.environ.get(
@@ -75,4 +95,9 @@ class StreamConfig:
                 "STREAM_CHECKPOINT_LOCATION", "/tmp/spark-checkpoints"
             ).strip(),
             log_level=os.environ.get("STREAM_LOG_LEVEL", "WARN").strip(),
+            pg_host=os.environ.get("POSTGRES_HOST", "localhost").strip(),
+            pg_port=pg_port,
+            pg_user=require("POSTGRES_USER"),
+            pg_password=require("POSTGRES_PASSWORD"),
+            pg_database=require("POSTGRES_DB"),
         )
